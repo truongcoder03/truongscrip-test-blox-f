@@ -1,0 +1,954 @@
+-- truongcoder | Blox Fruits | Delta (PC/Mobile)
+
+local cloneref = cloneref or function(obj) return obj end
+
+local Players = cloneref(game:GetService("Players"))
+local RunService = cloneref(game:GetService("RunService"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+local TeleportService = cloneref(game:GetService("TeleportService"))
+local HttpService = cloneref(game:GetService("HttpService"))
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+local CoreGui = cloneref(game:GetService("CoreGui"))
+local VirtualUser = cloneref(game:GetService("VirtualUser"))
+
+local LocalPlayer = Players.LocalPlayer
+local req = request or http_request or (syn and syn.request) or (fluxus and fluxus.request)
+local env = (getgenv and getgenv()) or _G
+
+local connections = {}
+local drawings = {}
+local instances = {}
+local unloaded = false
+
+local function trackConn(conn: RBXScriptConnection): RBXScriptConnection
+	table.insert(connections, conn)
+	return conn
+end
+
+local function trackInst(inst: Instance): Instance
+	table.insert(instances, inst)
+	return inst
+end
+
+local function cleanup()
+	unloaded = true
+	for _, conn in ipairs(connections) do
+		if conn and conn.Connected then
+			pcall(function() conn:Disconnect() end)
+		end
+	end
+	for _, draw in ipairs(drawings) do
+		if draw and draw.Remove then
+			pcall(function() draw:Remove() end)
+		end
+	end
+	for _, inst in ipairs(instances) do
+		if inst and inst.Destroy then
+			pcall(function() inst:Destroy() end)
+		end
+	end
+	pcall(function()
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum then hum.WalkSpeed = 16 end
+	end)
+	table.clear(connections)
+	table.clear(drawings)
+	table.clear(instances)
+end
+
+if env.DarkwenCleanup then
+	pcall(env.DarkwenCleanup)
+end
+env.DarkwenCleanup = cleanup
+
+local config = env.TruongcoderConfig or {
+	farm = false,
+	autoQuest = false,
+	autoSkill = false,
+	farmHeight = 8,
+	speed = false,
+	speedValue = 50,
+	jump = false,
+	jumpValue = 100,
+	fly = false,
+	flySpeed = 60,
+	noclip = false,
+	esp = false,
+	fruitEsp = false,
+	antiAfk = true,
+}
+env.TruongcoderConfig = config
+
+local ACCENT = Color3.fromRGB(235, 60, 80)
+local BG = Color3.fromRGB(20, 20, 26)
+local PANEL = Color3.fromRGB(30, 30, 38)
+local SIDE = Color3.fromRGB(25, 25, 32)
+local OFFC = Color3.fromRGB(60, 60, 72)
+local TEXT = Color3.fromRGB(235, 235, 240)
+local MUTED = Color3.fromRGB(150, 150, 165)
+
+local function getHeadshot(username: string): string?
+	if not req then return nil end
+	local ok, response = pcall(function()
+		return req({
+			Url = "https://users.roblox.com/v1/usernames/users",
+			Method = "POST",
+			Body = HttpService:JSONEncode({ usernames = { username }, excludeBannedUsers = true }),
+			Headers = { ["Content-Type"] = "application/json" }
+		})
+	end)
+	if ok and response and response.Success and response.Body then
+		local decodeOk, data = pcall(function()
+			return HttpService:JSONDecode(response.Body)
+		end)
+		if decodeOk and data and data.data and data.data[1] then
+			local userId = data.data[1].id
+			return "https://www.roblox.com/headshot-thumbnail/image?userId=" .. tostring(userId) .. "&width=150&height=150&format=png"
+		end
+	end
+	return nil
+end
+
+local guiParent = (gethui and gethui()) or CoreGui
+pcall(function()
+	local old = guiParent:FindFirstChild("truongcoder")
+	if old then old:Destroy() end
+end)
+
+local gui = trackInst(Instance.new("ScreenGui"))
+gui.Name = "truongcoder"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 999
+gui.Parent = guiParent
+
+local function corner(parent: Instance, r: number?)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, r or 8)
+	c.Parent = parent
+end
+
+local function stroke(parent: Instance)
+	local s = Instance.new("UIStroke")
+	s.Color = Color3.fromRGB(55, 55, 68)
+	s.Thickness = 1
+	s.Parent = parent
+end
+
+local function makeDraggable(handle: GuiObject, target: GuiObject): () -> boolean
+	local dragging = false
+	local moved = false
+	local dragStart, startPos
+
+	trackConn(handle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			moved = false
+			dragStart = input.Position
+			startPos = target.Position
+		end
+	end))
+
+	trackConn(UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end))
+
+	trackConn(UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			if delta.Magnitude > 6 then moved = true end
+			target.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end))
+
+	return function() return moved end
+end
+
+local function notify(text: string)
+	local f = trackInst(Instance.new("Frame"))
+	f.Size = UDim2.fromOffset(260, 34)
+	f.AnchorPoint = Vector2.new(0.5, 0)
+	f.Position = UDim2.new(0.5, 0, 0, 14)
+	f.BackgroundColor3 = PANEL
+	f.Parent = gui
+	corner(f, 8)
+	stroke(f)
+	local l = Instance.new("TextLabel")
+	l.Size = UDim2.fromScale(1, 1)
+	l.BackgroundTransparency = 1
+	l.Text = text
+	l.TextColor3 = TEXT
+	l.Font = Enum.Font.GothamSemibold
+	l.TextSize = 13
+	l.Parent = f
+	task.delay(2.5, function()
+		if f then f:Destroy() end
+	end)
+end
+
+local main = trackInst(Instance.new("Frame"))
+main.Name = "Main"
+main.AnchorPoint = Vector2.new(0.5, 0.5)
+main.Position = UDim2.fromScale(0.5, 0.5)
+main.Size = UDim2.fromScale(0.62, 0.72)
+main.BackgroundColor3 = BG
+main.BorderSizePixel = 0
+main.Visible = true
+main.Parent = gui
+corner(main, 10)
+stroke(main)
+
+local mainSize = Instance.new("UISizeConstraint")
+mainSize.MinSize = Vector2.new(360, 260)
+mainSize.MaxSize = Vector2.new(640, 440)
+mainSize.Parent = main
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 34)
+titleBar.BackgroundColor3 = PANEL
+titleBar.BorderSizePixel = 0
+titleBar.Parent = main
+corner(titleBar, 10)
+
+local titleText = Instance.new("TextLabel")
+titleText.Size = UDim2.new(1, -50, 1, 0)
+titleText.Position = UDim2.fromOffset(12, 0)
+titleText.BackgroundTransparency = 1
+titleText.Text = "truongcoder"
+titleText.TextColor3 = ACCENT
+titleText.Font = Enum.Font.GothamBold
+titleText.TextSize = 15
+titleText.TextXAlignment = Enum.TextXAlignment.Left
+titleText.Parent = titleBar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(26, 26)
+closeBtn.AnchorPoint = Vector2.new(1, 0.5)
+closeBtn.Position = UDim2.new(1, -6, 0.5, 0)
+closeBtn.BackgroundColor3 = OFFC
+closeBtn.Text = "X"
+closeBtn.TextColor3 = TEXT
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 12
+closeBtn.Parent = titleBar
+corner(closeBtn, 6)
+
+makeDraggable(titleBar, main)
+
+local sidebar = Instance.new("Frame")
+sidebar.Position = UDim2.fromOffset(0, 34)
+sidebar.Size = UDim2.new(0, 130, 1, -34)
+sidebar.BackgroundColor3 = SIDE
+sidebar.BorderSizePixel = 0
+sidebar.Parent = main
+
+local avatar = Instance.new("ImageLabel")
+avatar.Size = UDim2.fromOffset(56, 56)
+avatar.AnchorPoint = Vector2.new(0.5, 0)
+avatar.Position = UDim2.new(0.5, 0, 0, 10)
+avatar.BackgroundColor3 = PANEL
+avatar.Parent = sidebar
+corner(avatar, 28)
+
+local nameLabel = Instance.new("TextLabel")
+nameLabel.Size = UDim2.new(1, -8, 0, 18)
+nameLabel.Position = UDim2.fromOffset(4, 70)
+nameLabel.BackgroundTransparency = 1
+nameLabel.Text = LocalPlayer.DisplayName
+nameLabel.TextColor3 = TEXT
+nameLabel.Font = Enum.Font.GothamSemibold
+nameLabel.TextSize = 12
+nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+nameLabel.Parent = sidebar
+
+local tabHolder = Instance.new("Frame")
+tabHolder.Position = UDim2.fromOffset(8, 100)
+tabHolder.Size = UDim2.new(1, -16, 1, -108)
+tabHolder.BackgroundTransparency = 1
+tabHolder.Parent = sidebar
+
+local tabLayout = Instance.new("UIListLayout")
+tabLayout.Padding = UDim.new(0, 5)
+tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+tabLayout.Parent = tabHolder
+
+local content = Instance.new("Frame")
+content.Position = UDim2.new(0, 140, 0, 42)
+content.Size = UDim2.new(1, -150, 1, -50)
+content.BackgroundTransparency = 1
+content.Parent = main
+
+task.spawn(function()
+	local url = getHeadshot(LocalPlayer.Name)
+	if url then
+		avatar.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(LocalPlayer.UserId) .. "&w=150&h=150"
+	else
+		avatar.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(LocalPlayer.UserId) .. "&w=150&h=150"
+	end
+end)
+
+local pages = {}
+local tabButtons = {}
+
+local function newPage(name: string): ScrollingFrame
+	local p = Instance.new("ScrollingFrame")
+	p.Name = name
+	p.Size = UDim2.fromScale(1, 1)
+	p.BackgroundTransparency = 1
+	p.BorderSizePixel = 0
+	p.ScrollBarThickness = 4
+	p.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	p.CanvasSize = UDim2.new()
+	p.Visible = false
+	p.Parent = content
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 6)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = p
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 4)
+	pad.PaddingRight = UDim.new(0, 6)
+	pad.PaddingLeft = UDim.new(0, 2)
+	pad.Parent = p
+	pages[name] = p
+	return p
+end
+
+local function showPage(name: string)
+	for n, p in pairs(pages) do
+		p.Visible = (n == name)
+	end
+	for n, b in pairs(tabButtons) do
+		b.BackgroundColor3 = (n == name) and ACCENT or PANEL
+	end
+end
+
+local tabNames = { "Farm", "Move", "Visual", "Server", "Misc" }
+for _, name in ipairs(tabNames) do
+	newPage(name)
+end
+
+for i, name in ipairs(tabNames) do
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, 0, 0, 30)
+	b.LayoutOrder = i
+	b.BackgroundColor3 = PANEL
+	b.Text = name
+	b.TextColor3 = TEXT
+	b.Font = Enum.Font.GothamSemibold
+	b.TextSize = 13
+	b.Parent = tabHolder
+	corner(b, 6)
+	tabButtons[name] = b
+	b.Activated:Connect(function() showPage(name) end)
+end
+
+local function makeSection(parent: Instance, text: string)
+	local l = Instance.new("TextLabel")
+	l.Size = UDim2.new(1, -6, 0, 22)
+	l.BackgroundTransparency = 1
+	l.Text = string.upper(text)
+	l.TextColor3 = MUTED
+	l.Font = Enum.Font.GothamBold
+	l.TextSize = 11
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.Parent = parent
+end
+
+local function makeToggle(parent: Instance, text: string, key: string, onChange: ((boolean) -> ())?)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, -6, 0, 36)
+	row.BackgroundColor3 = PANEL
+	row.Parent = parent
+	corner(row, 8)
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, -80, 1, 0)
+	label.Position = UDim2.fromOffset(10, 0)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = TEXT
+	label.Font = Enum.Font.GothamSemibold
+	label.TextSize = 13
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = row
+
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.fromOffset(52, 22)
+	btn.AnchorPoint = Vector2.new(1, 0.5)
+	btn.Position = UDim2.new(1, -8, 0.5, 0)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 11
+	btn.TextColor3 = TEXT
+	btn.Parent = row
+	corner(btn, 6)
+
+	local function visual(v: boolean)
+		btn.Text = v and "ON" or "OFF"
+		btn.BackgroundColor3 = v and ACCENT or OFFC
+	end
+
+	visual(config[key] == true)
+
+	btn.Activated:Connect(function()
+		config[key] = not config[key]
+		visual(config[key])
+		if onChange then onChange(config[key]) end
+	end)
+end
+
+local function makeStepper(parent: Instance, text: string, key: string, step: number, minV: number, maxV: number)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, -6, 0, 36)
+	row.BackgroundColor3 = PANEL
+	row.Parent = parent
+	corner(row, 8)
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, -110, 1, 0)
+	label.Position = UDim2.fromOffset(10, 0)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = TEXT
+	label.Font = Enum.Font.GothamSemibold
+	label.TextSize = 13
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = row
+
+	local function refresh()
+		label.Text = text .. ": " .. tostring(config[key])
+	end
+	refresh()
+
+	local minus = Instance.new("TextButton")
+	minus.Size = UDim2.fromOffset(34, 24)
+	minus.AnchorPoint = Vector2.new(1, 0.5)
+	minus.Position = UDim2.new(1, -46, 0.5, 0)
+	minus.BackgroundColor3 = OFFC
+	minus.Text = "-"
+	minus.TextColor3 = TEXT
+	minus.Font = Enum.Font.GothamBold
+	minus.TextSize = 16
+	minus.Parent = row
+	corner(minus, 6)
+
+	local plus = Instance.new("TextButton")
+	plus.Size = UDim2.fromOffset(34, 24)
+	plus.AnchorPoint = Vector2.new(1, 0.5)
+	plus.Position = UDim2.new(1, -8, 0.5, 0)
+	plus.BackgroundColor3 = ACCENT
+	plus.Text = "+"
+	plus.TextColor3 = TEXT
+	plus.Font = Enum.Font.GothamBold
+	plus.TextSize = 16
+	plus.Parent = row
+	corner(plus, 6)
+
+	minus.Activated:Connect(function()
+		config[key] = math.max(minV, config[key] - step)
+		refresh()
+	end)
+	plus.Activated:Connect(function()
+		config[key] = math.min(maxV, config[key] + step)
+		refresh()
+	end)
+end
+
+local function makeButton(parent: Instance, text: string, callback: () -> ()): TextButton
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, -6, 0, 34)
+	b.BackgroundColor3 = PANEL
+	b.Text = text
+	b.TextColor3 = TEXT
+	b.Font = Enum.Font.GothamSemibold
+	b.TextSize = 13
+	b.Parent = parent
+	corner(b, 8)
+	b.Activated:Connect(callback)
+	return b
+end
+
+local function makeHoldButton(parent: Instance, text: string, onDown: () -> (), onUp: () -> ())
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, -6, 0, 34)
+	b.BackgroundColor3 = PANEL
+	b.Text = text
+	b.TextColor3 = TEXT
+	b.Font = Enum.Font.GothamSemibold
+	b.TextSize = 13
+	b.Parent = parent
+	corner(b, 8)
+	trackConn(b.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			onDown()
+		end
+	end))
+	trackConn(b.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			onUp()
+		end
+	end))
+	return b
+end
+
+local function getChar(): Model?
+	return LocalPlayer.Character
+end
+
+local function getRoot(): BasePart?
+	local char = getChar()
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHum(): Humanoid?
+	local char = getChar()
+	return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function findTarget(rootPos: Vector3, range: number): Model?
+	local enemies = workspace:FindFirstChild("Enemies")
+	if not enemies then return nil end
+	local best, bestDist = nil, range
+	for _, mob in ipairs(enemies:GetChildren()) do
+		local hum = mob:FindFirstChildOfClass("Humanoid")
+		local r = mob:FindFirstChild("HumanoidRootPart")
+		if hum and r and hum.Health > 0 then
+			local d = (r.Position - rootPos).Magnitude
+			if d < bestDist then
+				best = mob
+				bestDist = d
+			end
+		end
+	end
+	return best
+end
+
+local questTable = {
+	{ 1, "BanditQuest1", 1 },
+	{ 10, "JungleQuest", 1 },
+	{ 15, "BuggyQuest1", 1 },
+	{ 30, "DesertQuest", 1 },
+	{ 60, "SnowQuest", 1 },
+	{ 90, "MarineQuest2", 1 },
+	{ 120, "SkyQuest", 1 },
+}
+
+local function acceptQuest()
+	local data = LocalPlayer:FindFirstChild("Data")
+	local lvlObj = data and data:FindFirstChild("Level")
+	local level = (lvlObj and lvlObj.Value) or 1
+	local chosen = questTable[1]
+	for _, q in ipairs(questTable) do
+		if level >= q[1] then chosen = q end
+	end
+	task.spawn(function()
+		pcall(function()
+			local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+			local commf = remotes and remotes:FindFirstChild("CommF_")
+			if commf then
+				cloneref(commf):InvokeServer("StartQuest", chosen[2], chosen[3])
+			end
+		end)
+	end)
+end
+
+local attackCount = 0
+trackConn(RunService.Heartbeat:Connect(function() end))
+
+task.spawn(function()
+	local noTargetTime = 0
+	while not unloaded do
+		task.wait(0.1)
+		if not config.farm then
+			noTargetTime = 0
+			continue
+		end
+		local root = getRoot()
+		local hum = getHum()
+		if root and hum and hum.Health > 0 then
+			local target = findTarget(root.Position, 500)
+			if target then
+				noTargetTime = 0
+				local tr = target:FindFirstChild("HumanoidRootPart")
+				if tr then
+					pcall(function()
+						root.CFrame = CFrame.lookAt(tr.Position + Vector3.new(0, config.farmHeight, 0), tr.Position)
+						root.AssemblyLinearVelocity = Vector3.zero
+					end)
+					attackCount += 1
+					if attackCount % 2 == 0 then
+						pcall(function()
+							local cam = workspace.CurrentCamera
+							VirtualUser:Button1Down(Vector2.new(0, 0), cam.CFrame)
+							VirtualUser:Button1Up(Vector2.new(0, 0), cam.CFrame)
+						end)
+					end
+				end
+			else
+				noTargetTime += 0.1
+				if config.autoQuest and noTargetTime >= 3 then
+					noTargetTime = 0
+					acceptQuest()
+				end
+			end
+		end
+	end
+end)
+
+task.spawn(function()
+	local vimOk, vim = pcall(function()
+		return cloneref(game:GetService("VirtualInputManager"))
+	end)
+	if not vimOk or not vim then return end
+	local keys = { "Z", "X", "C", "V", "F" }
+	while not unloaded do
+		task.wait(0.6)
+		if config.autoSkill and config.farm then
+			for _, k in ipairs(keys) do
+				pcall(function()
+					vim:SendKeyEvent(true, Enum.KeyCode[k], false, game)
+					task.wait(0.05)
+					vim:SendKeyEvent(false, Enum.KeyCode[k], false, game)
+				end)
+				task.wait(0.15)
+			end
+		end
+	end
+end)
+
+local speedApplied = false
+local upHeld = false
+local downHeld = false
+
+trackConn(RunService.Heartbeat:Connect(function()
+	if unloaded then return end
+	local char = getChar()
+	local hum = getHum()
+	local root = getRoot()
+	if not hum or not root or hum.Health <= 0 then return end
+
+	if config.speed then
+		hum.WalkSpeed = config.speedValue
+		speedApplied = true
+	elseif speedApplied then
+		hum.WalkSpeed = 16
+		speedApplied = false
+	end
+
+	if config.jump then
+		hum.UseJumpPower = true
+		hum.JumpPower = config.jumpValue
+	end
+
+	if config.fly then
+		local move = hum.MoveDirection
+		local vert = 0
+		if upHeld or UserInputService:IsKeyDown(Enum.KeyCode.Space) then vert += 1 end
+		if downHeld or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then vert -= 1 end
+		local dir = move + Vector3.new(0, vert, 0)
+		if dir.Magnitude > 1 then dir = dir.Unit end
+		local yVel = (vert == 0) and 0 or (dir.Y * config.flySpeed)
+		root.AssemblyLinearVelocity = Vector3.new(dir.X * config.flySpeed, yVel, dir.Z * config.flySpeed)
+	end
+end))
+
+trackConn(RunService.Stepped:Connect(function()
+	if unloaded or not config.noclip then return end
+	local char = getChar()
+	if not char then return end
+	for _, p in ipairs(char:GetDescendants()) do
+		if p:IsA("BasePart") and p.CanCollide then
+			p.CanCollide = false
+		end
+	end
+end))
+
+local espFolder = trackInst(Instance.new("Folder"))
+espFolder.Name = "truongcoder_esp"
+espFolder.Parent = guiParent
+
+local espCache = {}
+
+local function clearEsp(key)
+	local data = espCache[key]
+	if data then
+		for _, o in ipairs(data) do
+			if o and o.Parent then o:Destroy() end
+		end
+		espCache[key] = nil
+	end
+end
+
+local function makeTag(adornee: BasePart, text: string, color: Color3): BillboardGui
+	local bb = Instance.new("BillboardGui")
+	bb.Adornee = adornee
+	bb.Size = UDim2.fromOffset(160, 28)
+	bb.StudsOffset = Vector3.new(0, 3, 0)
+	bb.AlwaysOnTop = true
+	bb.Parent = espFolder
+	local l = Instance.new("TextLabel")
+	l.Size = UDim2.fromScale(1, 1)
+	l.BackgroundTransparency = 1
+	l.Text = text
+	l.TextColor3 = color
+	l.TextStrokeTransparency = 0.4
+	l.Font = Enum.Font.GothamBold
+	l.TextSize = 12
+	l.Parent = bb
+	return bb
+end
+
+task.spawn(function()
+	while not unloaded do
+		task.wait(0.5)
+		local myRoot = getRoot()
+
+		for key, data in pairs(espCache) do
+			local stale = false
+			if typeof(key) == "Instance" then
+				stale = (not key.Parent) or (key:IsA("Player") and not key.Parent)
+			end
+			if stale then clearEsp(key) end
+		end
+
+		if config.esp then
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= LocalPlayer and plr.Character then
+					local char = plr.Character
+					local root = char:FindFirstChild("HumanoidRootPart")
+					local hum = char:FindFirstChildOfClass("Humanoid")
+					if root and hum and hum.Health > 0 then
+						if not espCache[plr] then
+							local hl = Instance.new("Highlight")
+							hl.Adornee = char
+							hl.FillColor = ACCENT
+							hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+							hl.FillTransparency = 0.6
+							hl.Parent = espFolder
+							local tag = makeTag(root, plr.DisplayName, TEXT)
+							espCache[plr] = { hl, tag }
+						end
+						local dist = myRoot and math.floor((root.Position - myRoot.Position).Magnitude) or 0
+						local tag = espCache[plr][2]
+						local lbl = tag:FindFirstChildOfClass("TextLabel")
+						if lbl then
+							lbl.Text = plr.DisplayName .. " [" .. tostring(math.floor(hum.Health)) .. "] " .. dist .. "m"
+						end
+					end
+				end
+			end
+		else
+			for key, _ in pairs(espCache) do
+				if typeof(key) == "Instance" and key:IsA("Player") then
+					clearEsp(key)
+				end
+			end
+		end
+
+		if config.fruitEsp then
+			for _, child in ipairs(workspace:GetChildren()) do
+				if child:IsA("Tool") and string.find(string.lower(child.Name), "fruit") then
+					local handle = child:FindFirstChild("Handle")
+					if handle and not espCache[child] then
+						local hl = Instance.new("Highlight")
+						hl.Adornee = child
+						hl.FillColor = Color3.fromRGB(80, 220, 120)
+						hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+						hl.FillTransparency = 0.5
+						hl.Parent = espFolder
+						local tag = makeTag(handle, child.Name, Color3.fromRGB(120, 255, 160))
+						espCache[child] = { hl, tag }
+					end
+				end
+			end
+			for key, _ in pairs(espCache) do
+				if typeof(key) == "Instance" and key:IsA("Tool") and not key.Parent then
+					clearEsp(key)
+				end
+			end
+		else
+			for key, _ in pairs(espCache) do
+				if typeof(key) == "Instance" and key:IsA("Tool") then
+					clearEsp(key)
+				end
+			end
+		end
+	end
+end)
+
+trackConn(LocalPlayer.Idled:Connect(function()
+	if config.antiAfk then
+		pcall(function()
+			VirtualUser:CaptureController()
+			VirtualUser:ClickButton2(Vector2.new())
+		end)
+	end
+end))
+
+local function teleportTo(plr: Player)
+	local char = plr.Character
+	local tr = char and char:FindFirstChild("HumanoidRootPart")
+	local root = getRoot()
+	if tr and root then
+		pcall(function()
+			root.CFrame = tr.CFrame * CFrame.new(0, 0, 4)
+		end)
+	end
+end
+
+local function serverHop()
+	if not req then
+		notify("Executor không hỗ trợ request")
+		return
+	end
+	task.spawn(function()
+		local ok, res = pcall(function()
+			return req({
+				Url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100", game.PlaceId),
+				Method = "GET"
+			})
+		end)
+		if ok and res and res.Success and res.Body then
+			local decOk, data = pcall(function()
+				return HttpService:JSONDecode(res.Body)
+			end)
+			if decOk and data and data.data then
+				for _, s in ipairs(data.data) do
+					if s.id ~= game.JobId and s.playing < s.maxPlayers then
+						notify("Đang chuyển server...")
+						pcall(function()
+							TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, LocalPlayer)
+						end)
+						return
+					end
+				end
+			end
+		end
+		notify("Không tìm thấy server phù hợp")
+	end)
+end
+
+local function rejoin()
+	pcall(function()
+		TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+	end)
+end
+
+local farmPage = pages["Farm"]
+makeSection(farmPage, "Auto Farm")
+makeToggle(farmPage, "Auto Farm", "farm")
+makeToggle(farmPage, "Auto Quest", "autoQuest")
+makeToggle(farmPage, "Auto Skill (Z X C V F)", "autoSkill")
+makeStepper(farmPage, "Độ cao farm", "farmHeight", 2, 2, 30)
+
+local movePage = pages["Move"]
+makeSection(movePage, "Movement")
+makeToggle(movePage, "Speed", "speed")
+makeStepper(movePage, "Tốc độ", "speedValue", 5, 16, 200)
+makeToggle(movePage, "Jump Power", "jump")
+makeStepper(movePage, "Lực nhảy", "jumpValue", 10, 50, 300)
+makeToggle(movePage, "Fly", "fly")
+makeStepper(movePage, "Tốc độ bay", "flySpeed", 10, 20, 250)
+makeToggle(movePage, "Noclip", "noclip")
+makeSection(movePage, "Fly Mobile (giữ để bay)")
+makeHoldButton(movePage, "▲ Lên", function() upHeld = true end, function() upHeld = false end)
+makeHoldButton(movePage, "▼ Xuống", function() downHeld = true end, function() downHeld = false end)
+
+local visualPage = pages["Visual"]
+makeSection(visualPage, "ESP")
+makeToggle(visualPage, "Player ESP", "esp")
+makeToggle(visualPage, "Fruit ESP", "fruitEsp")
+
+local serverPage = pages["Server"]
+makeSection(serverPage, "Server")
+makeButton(serverPage, "Server Hop", serverHop)
+makeButton(serverPage, "Rejoin", rejoin)
+makeButton(serverPage, "Copy JobId", function()
+	if setclipboard then
+		setclipboard(game.JobId)
+		notify("Đã copy JobId")
+	else
+		notify("Executor không hỗ trợ clipboard")
+	end
+end)
+makeSection(serverPage, "Utility")
+makeToggle(serverPage, "Anti-AFK", "antiAfk")
+
+local miscPage = pages["Misc"]
+makeSection(miscPage, "Teleport đến người chơi")
+local playerList = Instance.new("Frame")
+playerList.Size = UDim2.new(1, -6, 0, 0)
+playerList.AutomaticSize = Enum.AutomaticSize.Y
+playerList.BackgroundTransparency = 1
+playerList.Parent = miscPage
+local playerListLayout = Instance.new("UIListLayout")
+playerListLayout.Padding = UDim.new(0, 5)
+playerListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+playerListLayout.Parent = playerList
+
+local function refreshPlayers()
+	for _, c in ipairs(playerList:GetChildren()) do
+		if c:IsA("TextButton") then c:Destroy() end
+	end
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer then
+			makeButton(playerList, plr.DisplayName .. " (@" .. plr.Name .. ")", function()
+				teleportTo(plr)
+			end)
+		end
+	end
+end
+
+makeButton(miscPage, "Làm mới danh sách", refreshPlayers)
+makeSection(miscPage, "Hệ thống")
+makeButton(miscPage, "Copy Script Info", function()
+	if setclipboard then
+		setclipboard("truongcoder | PlaceId: " .. game.PlaceId .. " | JobId: " .. game.JobId)
+		notify("Đã copy thông tin")
+	end
+end)
+makeButton(miscPage, "Unload truongcoder", function()
+	cleanup()
+	pcall(function() gui:Destroy() end)
+end)
+
+showPage("Farm")
+refreshPlayers()
+
+local floatBtn = trackInst(Instance.new("TextButton"))
+floatBtn.Name = "FloatToggle"
+floatBtn.Size = UDim2.fromOffset(46, 46)
+floatBtn.Position = UDim2.fromOffset(12, 120)
+floatBtn.BackgroundColor3 = ACCENT
+floatBtn.Text = "TC"
+floatBtn.TextColor3 = TEXT
+floatBtn.Font = Enum.Font.GothamBold
+floatBtn.TextSize = 14
+floatBtn.Parent = gui
+corner(floatBtn, 23)
+stroke(floatBtn)
+
+local floatWasMoved = makeDraggable(floatBtn, floatBtn)
+
+floatBtn.Activated:Connect(function()
+	if floatWasMoved() then return end
+	main.Visible = not main.Visible
+end)
+
+closeBtn.Activated:Connect(function()
+	main.Visible = false
+end)
+
+trackConn(UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.RightShift then
+		main.Visible = not main.Visible
+	end
+end))
+
+notify("truongcoder đã sẵn sàng")
