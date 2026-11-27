@@ -73,11 +73,15 @@ local Config: {[string]: any} = {
 	AutoQuest = false,
 	AutoChest = false,
 	Traveling = false,
+	HideGameHUD = true,
 	Session = 0,
 	FlySpeed = 180,
 	AttackHeight = 22,
 	AttackDelay = 0.12,
 }
+
+local JOY_RADIUS = 70
+local JOY_DEADZONE = 0.12
 
 local QuestTable: {QuestEntry} = {
 	{MinLv = 1, MaxLv = 9, Mob = "Bandit", Quest = "BanditQuest1", QLv = 1, Npc = "Adventurer"},
@@ -100,6 +104,13 @@ local Islands = {
 local refreshers: {() -> ()} = {}
 local statusLabel: TextLabel? = nil
 local lastQuestAttempt = 0
+
+local moveState = {
+	active = false,
+	input = nil :: InputObject?,
+	origin = Vector2.zero,
+	vec = Vector3.zero,
+}
 
 local function setStatus(text: string)
 	if statusLabel then
@@ -126,6 +137,20 @@ local function isAlive(): boolean
 	return h ~= nil and h.Health > 0
 end
 
+local function getStat(name: string): number
+	local data = LocalPlayer:FindFirstChild("Data")
+	local v = data and data:FindFirstChild(name)
+	if v and (v:IsA("IntValue") or v:IsA("NumberValue")) then
+		return v.Value
+	end
+	return 0
+end
+
+local function getLevel(): number
+	local lv = getStat("Level")
+	return lv > 0 and lv or 1
+end
+
 local function invokeCommF(...: any): any
 	local ok, res = pcall(function()
 		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -139,15 +164,6 @@ local function invokeCommF(...: any): any
 		return res
 	end
 	return nil
-end
-
-local function getLevel(): number
-	local data = LocalPlayer:FindFirstChild("Data")
-	local lv = data and data:FindFirstChild("Level")
-	if lv and lv:IsA("IntValue") then
-		return lv.Value
-	end
-	return 1
 end
 
 local function getQuestData(): QuestEntry
@@ -520,30 +536,201 @@ screen.IgnoreGuiInset = true
 screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screen.Parent = getGuiParent()
 
+local function applyGameHUD()
+	for _, g in ipairs(PlayerGui:GetChildren()) do
+		if g:IsA("ScreenGui") and g ~= screen then
+			pcall(function() g.Enabled = not Config.HideGameHUD end)
+		end
+	end
+end
+trackConn(PlayerGui.ChildAdded:Connect(function()
+	task.wait()
+	applyGameHUD()
+end))
+applyGameHUD()
+
+local movePad = Instance.new("TextButton")
+movePad.Name = "MovePad"
+movePad.Text = ""
+movePad.AutoButtonColor = false
+movePad.BackgroundTransparency = 1
+movePad.AnchorPoint = Vector2.new(0, 1)
+movePad.Position = UDim2.fromScale(0, 1)
+movePad.Size = UDim2.fromScale(0.5, 0.7)
+movePad.Parent = screen
+
+local jumpBtn = Instance.new("TextButton")
+jumpBtn.Name = "JumpBtn"
+jumpBtn.Text = ""
+jumpBtn.AutoButtonColor = false
+jumpBtn.BackgroundTransparency = 1
+jumpBtn.AnchorPoint = Vector2.new(1, 1)
+jumpBtn.Position = UDim2.new(1, -18, 1, -18)
+jumpBtn.Size = UDim2.fromOffset(130, 130)
+jumpBtn.Parent = screen
+local jumpRatio = Instance.new("UIAspectRatioConstraint")
+jumpRatio.AspectRatio = 1
+jumpRatio.Parent = jumpBtn
+
+local function applyMove()
+	local hum = getHum()
+	if hum and moveState.active then
+		hum:Move(moveState.vec, true)
+	end
+end
+
+local function stopMove()
+	moveState.active = false
+	moveState.input = nil
+	moveState.vec = Vector3.zero
+	local hum = getHum()
+	if hum then
+		hum:Move(Vector3.zero, true)
+	end
+end
+
+trackConn(movePad.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+		moveState.active = true
+		moveState.input = input
+		moveState.origin = Vector2.new(input.Position.X, input.Position.Y)
+		moveState.vec = Vector3.zero
+	end
+end))
+
+trackConn(UserInputService.InputChanged:Connect(function(input)
+	if not moveState.active or not moveState.input then
+		return
+	end
+	if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseMovement then
+		return
+	end
+	if moveState.input.UserInputType == Enum.UserInputType.Touch and input ~= moveState.input then
+		return
+	end
+	local delta = Vector2.new(input.Position.X, input.Position.Y) - moveState.origin
+	local v = Vector2.new(delta.X / JOY_RADIUS, -delta.Y / JOY_RADIUS)
+	if v.Magnitude > 1 then
+		v = v.Unit
+	end
+	if v.Magnitude < JOY_DEADZONE then
+		v = Vector2.zero
+	end
+	moveState.vec = Vector3.new(v.X, 0, -v.Y)
+	applyMove()
+end))
+
+trackConn(UserInputService.InputEnded:Connect(function(input)
+	if not moveState.active or not moveState.input then
+		return
+	end
+	local isEnd = input == moveState.input
+	if moveState.input.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1 then
+		isEnd = true
+	end
+	if isEnd then
+		stopMove()
+	end
+end))
+
+local function doJump()
+	local hum = getHum()
+	if hum and hum.Health > 0 then
+		hum:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+end
+
+trackConn(jumpBtn.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+		doJump()
+	end
+end))
+
+local hud = Instance.new("Frame")
+hud.Name = "DarkwenHUD"
+hud.Size = UDim2.fromOffset(190, 58)
+hud.Position = UDim2.new(0, 12, 0, 12)
+hud.BackgroundColor3 = BG
+hud.BackgroundTransparency = 0.15
+hud.BorderSizePixel = 0
+hud.Parent = screen
+addCorner(hud, 10)
+addStroke(hud, PINK, 1)
+
+local hudName = Instance.new("TextLabel")
+hudName.Size = UDim2.new(1, -20, 0, 18)
+hudName.Position = UDim2.new(0, 10, 0, 6)
+hudName.BackgroundTransparency = 1
+hudName.Font = Enum.Font.GothamBold
+hudName.TextSize = 13
+hudName.TextColor3 = TEXT
+hudName.TextXAlignment = Enum.TextXAlignment.Left
+hudName.TextTruncate = Enum.TextTruncate.AtEnd
+hudName.Text = LocalPlayer.Name
+hudName.Parent = hud
+
+local hudInfo = Instance.new("TextLabel")
+hudInfo.Size = UDim2.new(1, -20, 0, 14)
+hudInfo.Position = UDim2.new(0, 10, 0, 22)
+hudInfo.BackgroundTransparency = 1
+hudInfo.Font = Enum.Font.GothamMedium
+hudInfo.TextSize = 11
+hudInfo.TextColor3 = LAVENDER
+hudInfo.TextXAlignment = Enum.TextXAlignment.Left
+hudInfo.Text = "Lv 1 | Beli 0"
+hudInfo.Parent = hud
+
+local hpBack = Instance.new("Frame")
+hpBack.Size = UDim2.new(1, -20, 0, 8)
+hpBack.Position = UDim2.new(0, 10, 0, 42)
+hpBack.BackgroundColor3 = PANEL
+hpBack.BorderSizePixel = 0
+hpBack.Parent = hud
+addCorner(hpBack, 4)
+
+local hpFill = Instance.new("Frame")
+hpFill.Size = UDim2.fromScale(1, 1)
+hpFill.BackgroundColor3 = PINK
+hpFill.BorderSizePixel = 0
+hpFill.Parent = hpBack
+addCorner(hpFill, 4)
+
+local floatBtn = Instance.new("TextButton")
+floatBtn.Size = UDim2.fromOffset(60, 60)
+floatBtn.Position = UDim2.new(0, 16, 0.5, 0)
+floatBtn.BackgroundColor3 = PINK
+floatBtn.Text = "DW"
+floatBtn.Font = Enum.Font.GothamBlack
+floatBtn.TextSize = 17
+floatBtn.TextColor3 = BG
+floatBtn.Parent = screen
+addCorner(floatBtn, 30)
+addStroke(floatBtn, LAVENDER, 2)
+
 local main = Instance.new("Frame")
 main.Name = "Main"
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.Position = UDim2.fromScale(0.5, 0.5)
-main.Size = UDim2.fromScale(0.42, 0.62)
+main.Size = UDim2.fromScale(0.42, 0.66)
 main.BackgroundColor3 = BG
 main.BorderSizePixel = 0
 main.Parent = screen
 addCorner(main, 14)
 addStroke(main, PINK, 2)
 local mainSize = Instance.new("UISizeConstraint")
-mainSize.MinSize = Vector2.new(280, 320)
-mainSize.MaxSize = Vector2.new(480, 540)
+mainSize.MinSize = Vector2.new(290, 340)
+mainSize.MaxSize = Vector2.new(500, 580)
 mainSize.Parent = main
 
 local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 44)
+header.Size = UDim2.new(1, 0, 0, 48)
 header.BackgroundColor3 = PANEL
 header.BorderSizePixel = 0
 header.Parent = main
 addCorner(header, 14)
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -60, 1, 0)
+title.Size = UDim2.new(1, -64, 1, 0)
 title.Position = UDim2.new(0, 14, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "DARKWEN • ANIME FARM"
@@ -554,19 +741,19 @@ title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = header
 
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 32, 0, 32)
-closeBtn.Position = UDim2.new(1, -40, 0, 6)
+closeBtn.Size = UDim2.fromOffset(38, 38)
+closeBtn.Position = UDim2.new(1, -44, 0, 5)
 closeBtn.BackgroundColor3 = BG
 closeBtn.Text = "X"
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 14
+closeBtn.TextSize = 15
 closeBtn.TextColor3 = TEXT
 closeBtn.Parent = header
 addCorner(closeBtn, 8)
 
 local body = Instance.new("ScrollingFrame")
-body.Size = UDim2.new(1, -16, 1, -100)
-body.Position = UDim2.new(0, 8, 0, 52)
+body.Size = UDim2.new(1, -16, 1, -116)
+body.Position = UDim2.new(0, 8, 0, 56)
 body.BackgroundTransparency = 1
 body.BorderSizePixel = 0
 body.ScrollBarThickness = 4
@@ -593,9 +780,9 @@ status.Parent = main
 addCorner(status, 10)
 statusLabel = status
 
-local function createToggle(text: string, key: string, order: number)
+local function createToggle(text: string, key: string, order: number, isHud: boolean?)
 	local btn = Instance.new("TextButton")
-	btn.Size = UDim2.new(1, -4, 0, 40)
+	btn.Size = UDim2.new(1, -4, 0, 46)
 	btn.BackgroundColor3 = PANEL
 	btn.Font = Enum.Font.GothamBold
 	btn.TextSize = 15
@@ -612,20 +799,28 @@ local function createToggle(text: string, key: string, order: number)
 	refresh()
 	table.insert(refreshers, refresh)
 	trackConn(btn.Activated:Connect(function()
-		setFeature(key, not (Config[key] == true))
+		if isHud then
+			Config[key] = not (Config[key] == true)
+			applyGameHUD()
+			for _, r in ipairs(refreshers) do
+				r()
+			end
+		else
+			setFeature(key, not (Config[key] == true))
+		end
 	end))
 end
 
 local function createStepper(label: string, key: string, step: number, minV: number, maxV: number, order: number)
 	local row = Instance.new("Frame")
-	row.Size = UDim2.new(1, -4, 0, 40)
+	row.Size = UDim2.new(1, -4, 0, 46)
 	row.BackgroundColor3 = PANEL
 	row.LayoutOrder = order
 	row.Parent = body
 	addCorner(row, 10)
 
 	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(1, -130, 1, 0)
+	lbl.Size = UDim2.new(1, -140, 1, 0)
 	lbl.Position = UDim2.new(0, 12, 0, 0)
 	lbl.BackgroundTransparency = 1
 	lbl.Text = label
@@ -636,19 +831,19 @@ local function createStepper(label: string, key: string, step: number, minV: num
 	lbl.Parent = row
 
 	local minus = Instance.new("TextButton")
-	minus.Size = UDim2.new(0, 30, 0, 28)
-	minus.Position = UDim2.new(1, -118, 0, 6)
+	minus.Size = UDim2.fromOffset(40, 34)
+	minus.Position = UDim2.new(1, -130, 0, 6)
 	minus.BackgroundColor3 = BG
 	minus.Text = "-"
 	minus.Font = Enum.Font.GothamBold
-	minus.TextSize = 16
+	minus.TextSize = 18
 	minus.TextColor3 = TEXT
 	minus.Parent = row
 	addCorner(minus, 8)
 
 	local val = Instance.new("TextLabel")
-	val.Size = UDim2.new(0, 42, 0, 28)
-	val.Position = UDim2.new(1, -84, 0, 6)
+	val.Size = UDim2.fromOffset(44, 34)
+	val.Position = UDim2.new(1, -86, 0, 6)
 	val.BackgroundTransparency = 1
 	val.Font = Enum.Font.GothamBold
 	val.TextSize = 14
@@ -656,12 +851,12 @@ local function createStepper(label: string, key: string, step: number, minV: num
 	val.Parent = row
 
 	local plus = Instance.new("TextButton")
-	plus.Size = UDim2.new(0, 30, 0, 28)
-	plus.Position = UDim2.new(1, -40, 0, 6)
+	plus.Size = UDim2.fromOffset(40, 34)
+	plus.Position = UDim2.new(1, -42, 0, 6)
 	plus.BackgroundColor3 = BG
 	plus.Text = "+"
 	plus.Font = Enum.Font.GothamBold
-	plus.TextSize = 16
+	plus.TextSize = 18
 	plus.TextColor3 = TEXT
 	plus.Parent = row
 	addCorner(plus, 8)
@@ -702,16 +897,19 @@ createToggle("Auto Nhặt Rương", "AutoChest", 4)
 createStepper("Tốc độ bay", "FlySpeed", 20, 60, 400, 5)
 createStepper("Độ cao đánh", "AttackHeight", 2, 5, 60, 6)
 
-createHeader("✿ BAY QUA ĐẢO", 7)
+createHeader("✿ GIAO DIỆN", 7)
+createToggle("Ẩn HUD game", "HideGameHUD", 8, true)
+
+createHeader("✿ BAY QUA ĐẢO", 9)
 for i, islandName in ipairs(Islands) do
 	local btn = Instance.new("TextButton")
-	btn.Size = UDim2.new(1, -4, 0, 36)
+	btn.Size = UDim2.new(1, -4, 0, 42)
 	btn.BackgroundColor3 = PANEL
 	btn.Text = islandName
 	btn.Font = Enum.Font.GothamMedium
 	btn.TextSize = 14
 	btn.TextColor3 = TEXT
-	btn.LayoutOrder = 7 + i
+	btn.LayoutOrder = 9 + i
 	btn.Parent = body
 	addCorner(btn, 10)
 	addStroke(btn, PINK, 1)
@@ -721,7 +919,7 @@ for i, islandName in ipairs(Islands) do
 end
 
 local unloadBtn = Instance.new("TextButton")
-unloadBtn.Size = UDim2.new(1, -4, 0, 36)
+unloadBtn.Size = UDim2.new(1, -4, 0, 42)
 unloadBtn.BackgroundColor3 = BG
 unloadBtn.Text = "Unload"
 unloadBtn.Font = Enum.Font.GothamBold
@@ -731,18 +929,6 @@ unloadBtn.LayoutOrder = 100
 unloadBtn.Parent = body
 addCorner(unloadBtn, 10)
 addStroke(unloadBtn, PINK, 1)
-
-local floatBtn = Instance.new("TextButton")
-floatBtn.Size = UDim2.new(0, 52, 0, 52)
-floatBtn.Position = UDim2.new(0, 16, 0.5, 0)
-floatBtn.BackgroundColor3 = PINK
-floatBtn.Text = "DW"
-floatBtn.Font = Enum.Font.GothamBlack
-floatBtn.TextSize = 16
-floatBtn.TextColor3 = BG
-floatBtn.Parent = screen
-addCorner(floatBtn, 26)
-addStroke(floatBtn, LAVENDER, 2)
 
 makeDraggable(header, main)
 makeDraggable(floatBtn, floatBtn)
@@ -769,20 +955,33 @@ trackConn(unloadBtn.Activated:Connect(function()
 		Config[key] = false
 	end
 	Config.Session += 1
+	stopMove()
+	Config.HideGameHUD = false
+	applyGameHUD()
 	cleanup()
 	pcall(function() screen:Destroy() end)
 end))
 
 task.spawn(function()
 	while screen.Parent do
+		local hum = getHum()
+		if hum then
+			local maxHp = math.max(hum.MaxHealth, 1)
+			hpFill.Size = UDim2.fromScale(math.clamp(hum.Health / maxHp, 0, 1), 1)
+		else
+			hpFill.Size = UDim2.fromScale(0, 1)
+		end
+		hudName.Text = LocalPlayer.Name
+		hudInfo.Text = "Lv " .. tostring(getLevel()) .. " | Beli " .. tostring(getStat("Beli"))
 		if not (Config.AutoFarm or Config.AutoChest) then
 			setStatus("Level " .. tostring(getLevel()) .. " | Quest: " .. getQuestData().Quest)
 		end
-		task.wait(0.5)
+		task.wait(0.25)
 	end
 end)
 
 trackConn(LocalPlayer.CharacterAdded:Connect(function()
+	stopMove()
 	task.wait(1)
 	if Config.AutoFarm or Config.AutoChest then
 		startAll()
